@@ -18,7 +18,7 @@ const App: React.FC = () => {
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [entries, setEntries] = useState<WorkEntry[]>([]);
   const [summaries, setSummaries] = useState<MonthSummary[]>([]);
-  const [activeTab, setActiveTab] = useState('build' as Tab); 
+  const [activeTab, setActiveTab] = useState('dashboard' as Tab); 
   const [loading, setLoading] = useState(false);
   const [dbStatus, setDbStatus] = useState<'connected' | 'local' | 'connecting'>('connecting');
   
