@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { BuildComponent, DesignProject, User, WorkEntry } from '../types';
 import { GeminiAssistant } from './GeminiAssistant';
@@ -59,6 +58,20 @@ export const BuildPage: React.FC = () => {
     setActiveProject(p);
     setComponents(p.components || []);
     setProjectName(p.name || 'Untitled Blueprint');
+    setActiveId(null);
+  };
+
+  const createNewProject = () => {
+    const id = 'proj_' + Math.random().toString(36).substr(2, 9);
+    const newProj: DesignProject = {
+      id,
+      name: 'System Alpha',
+      components: [],
+      updatedAt: Date.now()
+    };
+    setActiveProject(newProj);
+    setComponents([]);
+    setProjectName(newProj.name);
     setActiveId(null);
   };
 
@@ -124,6 +137,26 @@ export const BuildPage: React.FC = () => {
     setTimeout(() => setSaving(false), 800);
   };
 
+  const deleteProject = async (id: string) => {
+    if (confirm("Permanently erase blueprint?")) {
+      const remaining = projects.filter(p => p.id !== id);
+      setProjects(remaining);
+      localStorage.setItem('loggit_v4_projects', JSON.stringify(remaining));
+      if (activeProject?.id === id) {
+        if (remaining.length > 0) selectProject(remaining[0]);
+        else createNewProject();
+      }
+    }
+  };
+
+  const resetGhostPasscode = async (user: User) => {
+    if (confirm(`Repair Profile: Clear 'Ghost Passcode' for ${user.fullName}? This restores the account to PENDING ACTIVATION.`)) {
+      await storageService.updateUser(user.id, { isPasswordSet: false, password: '' });
+      fetchRawData();
+      alert("Profile Repaired.");
+    }
+  };
+
   const activeComp = components.find(c => c.id === activeId);
 
   return (
@@ -138,11 +171,34 @@ export const BuildPage: React.FC = () => {
 
           {mode === 'ui-builder' ? (
             <>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                   <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.4em]">Blueprints</h3>
+                   <button onClick={createNewProject} className="text-[#89CFF0] text-[9px] font-black uppercase hover:underline">+ New Design</button>
+                </div>
+                <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2">
+                  {projects.map(p => (
+                    <button 
+                      key={p.id} 
+                      onClick={() => selectProject(p)}
+                      className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase whitespace-nowrap border-2 transition-all ${activeProject?.id === p.id ? 'bg-[#89CFF0] border-[#89CFF0] text-black' : 'bg-black/40 border-slate-800 text-slate-500 hover:border-slate-700'}`}
+                    >
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="flex items-center gap-4 p-4 bg-black/40 rounded-3xl border-2 border-slate-800">
                 <div className="flex-grow">
-                  <h2 className="text-[9px] font-black text-slate-500 uppercase tracking-[0.4em] mb-1">Project Identifier</h2>
+                  <h2 className="text-[9px] font-black text-slate-500 uppercase tracking-[0.4em] mb-1">Blueprint Name</h2>
                   <input value={projectName} onChange={(e) => setProjectName(e.target.value)} className="bg-transparent text-xl font-black text-white uppercase outline-none w-full" />
                 </div>
+                {activeProject && projects.length > 1 && (
+                  <button onClick={() => deleteProject(activeProject.id)} className="w-10 h-10 bg-red-600/10 text-red-500 rounded-xl hover:bg-red-600 hover:text-white transition-all">
+                    <i className="fa-solid fa-trash-can text-[10px]"></i>
+                  </button>
+                )}
               </div>
               
               <div className="grid grid-cols-2 gap-4">
@@ -189,14 +245,25 @@ export const BuildPage: React.FC = () => {
                           />
                         </div>
                       </div>
-                      <div className="space-y-1">
-                        <label className="text-[8px] font-black text-slate-600 uppercase">Corner Radius</label>
-                        <input 
-                          type="range" min="0" max="64" step="2"
-                          value={parseInt(String(activeComp.styles.borderRadius)) || 0}
-                          onChange={(e) => updateActiveStyle({ borderRadius: `${e.target.value}px` })}
-                          className="w-full accent-[#89CFF0]"
-                        />
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <label className="text-[8px] font-black text-slate-600 uppercase">Font Size (rem)</label>
+                          <input 
+                            type="number" step="0.5" min="0.5"
+                            value={parseFloat(String(activeComp.styles.fontSize)) || 1}
+                            onChange={(e) => updateActiveStyle({ fontSize: `${e.target.value}rem` })}
+                            className="w-full bg-slate-900 border border-slate-700 p-2 rounded-lg text-xs text-white outline-none"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[8px] font-black text-slate-600 uppercase">Corner Radius</label>
+                          <input 
+                            type="range" min="0" max="64" step="2"
+                            value={parseInt(String(activeComp.styles.borderRadius)) || 0}
+                            onChange={(e) => updateActiveStyle({ borderRadius: `${e.target.value}px` })}
+                            className="w-full accent-[#89CFF0]"
+                          />
+                        </div>
                       </div>
                    </div>
                 </div>
@@ -316,12 +383,35 @@ export const BuildPage: React.FC = () => {
 
                         <div className="bg-slate-950 p-10 rounded-[3.5rem] border-4 border-[#10b981]/10 flex flex-col items-center text-center shadow-2xl">
                            <div className="w-20 h-20 bg-[#10b981]/10 rounded-full flex items-center justify-center mb-8 border-2 border-[#10b981]/20">
+                              <i className="fa-solid fa-wrench text-4xl text-[#10b981]"></i>
+                           </div>
+                           <h3 className="text-3xl font-black text-white uppercase logo-font mb-4">Master Repair Utility</h3>
+                           <p className="text-slate-500 text-xs font-bold max-w-lg mb-10 leading-relaxed uppercase tracking-widest">
+                             Fix "Ghost Passcodes" on repurposed accounts (like sam1) to force a fresh activation challenge.
+                           </p>
+                           <div className="w-full max-w-2xl space-y-4">
+                             {rawUsers.filter(u => u.role === 'EMPLOYEE' && u.isPasswordSet).map(u => (
+                               <div key={u.id} className="flex items-center justify-between p-5 bg-black rounded-2xl border-2 border-slate-800 group hover:border-[#89CFF0] transition-all">
+                                 <div className="text-left">
+                                   <div className="text-xs font-black text-white uppercase">{u.fullName}</div>
+                                   <div className="text-[9px] font-mono text-slate-500 uppercase tracking-widest">ID: {u.username} | STATUS: ACTIVATED</div>
+                                 </div>
+                                 <button 
+                                   onClick={() => resetGhostPasscode(u)}
+                                   className="px-6 py-3 bg-red-600/10 text-red-500 rounded-xl text-[9px] font-black uppercase border border-red-500/20 hover:bg-red-500 hover:text-white transition-all"
+                                 >
+                                   Wipe Passcode
+                                 </button>
+                               </div>
+                             ))}
+                           </div>
+                        </div>
+
+                        <div className="bg-slate-950 p-10 rounded-[3.5rem] border-4 border-[#10b981]/10 flex flex-col items-center text-center shadow-2xl">
+                           <div className="w-20 h-20 bg-[#10b981]/10 rounded-full flex items-center justify-center mb-8 border-2 border-[#10b981]/20">
                               <i className="fa-solid fa-cloud-arrow-up text-4xl text-[#10b981]"></i>
                            </div>
-                           <h3 className="text-3xl font-black text-white uppercase logo-font mb-4">Manual Cloud Push</h3>
-                           <p className="text-slate-500 text-xs font-bold max-w-lg mb-10 leading-relaxed uppercase tracking-widest">
-                             If your high-precision logs are visible in local storage but missing from the Cloud HQ, execute this protocol to override the remote mirror with your local browser records.
-                           </p>
+                           <h3 className="text-3xl font-black text-white uppercase logo-font mb-4">Cloud Overwrite</h3>
                            <button 
                              onClick={async () => {
                                if (confirm("Initiate Cloud Sync?")) {

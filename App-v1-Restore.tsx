@@ -46,6 +46,26 @@ const App: React.FC = () => {
     status: 'active' as UserStatus 
   });
 
+  // ROBUST PWA WAKE-UP TRIGGER
+  useEffect(() => {
+    const triggerWakeSplash = () => {
+      // If app is revealed and we have a user, trigger intro overlay
+      if (document.visibilityState === 'visible' && currentUser && !showSplash) {
+        setShowSplash(true);
+      }
+    };
+
+    document.addEventListener('visibilitychange', triggerWakeSplash);
+    window.addEventListener('focus', triggerWakeSplash);
+    window.addEventListener('pageshow', triggerWakeSplash);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', triggerWakeSplash);
+      window.removeEventListener('focus', triggerWakeSplash);
+      window.removeEventListener('pageshow', triggerWakeSplash);
+    };
+  }, [currentUser, showSplash]);
+
   const refreshData = useCallback(async (userId: string, isMaster: boolean, viewUser?: User | null) => {
     setLoading(true);
     try {
@@ -55,7 +75,7 @@ const App: React.FC = () => {
             storageService.getVerifications()
         ]);
         
-        setAllUsers([...latestUsers]); 
+        setAllUsers(latestUsers);
         setDbStatus(storageService.getConnectionStatus());
         
         const targetViewUser = viewUser !== undefined ? viewUser : viewingUser;
@@ -84,9 +104,10 @@ const App: React.FC = () => {
     const initApp = async () => {
         await storageService.init();
         setDbStatus(storageService.getConnectionStatus());
+        // PERSISTENCE: Use localStorage so PWA doesn't logout
         const savedUser = localStorage.getItem('logged_user');
         const latestUsers = await storageService.getUsers();
-        setAllUsers([...latestUsers]);
+        setAllUsers(latestUsers);
 
         if (savedUser) {
           const u = JSON.parse(savedUser);
@@ -112,7 +133,7 @@ const App: React.FC = () => {
     }
     
     const users = await storageService.getUsers();
-    const user = users.find(u => u.username.toLowerCase() === uTrim.toLowerCase());
+    const user = users.find(u => u.username === uTrim);
     
     if (!user || user.status === 'left') { 
       setError('UNAUTHORIZED: Access revoked by administration.'); 
@@ -122,11 +143,10 @@ const App: React.FC = () => {
     if (!user.isPasswordSet) {
       if (!tempUser) { setTempUser(user); setError(''); return; }
       if (user.dob === loginDob) { setIsVerifying(true); setError(''); }
-      else { setError(`SECURITY MISMATCH: Check ID Profile.`); }
+      else { setError(`Security mismatch.`); }
     } else {
-      if (!pTrim) { setError('Passcode Required.'); return; }
       if (user.password === pTrim) loginUser(user);
-      else setError('Invalid Security Passcode.');
+      else setError('Incorrect passcode.');
     }
   };
 
@@ -139,7 +159,6 @@ const App: React.FC = () => {
     setError('');
     localStorage.setItem('logged_user', JSON.stringify(user));
     setShowSplash(true); 
-    refreshData(user.id, user.role === 'MASTER');
   };
 
   const handleLogout = () => {
@@ -199,57 +218,6 @@ const App: React.FC = () => {
     await refreshData(currentUser!.id, currentUser!.role === 'MASTER');
   };
 
-  const resetEmployeeActivation = async (user: User) => {
-    const confirmMessage = `MASTER OVERRIDE: Clear security passcode for '${user.fullName}' (${user.username})? \n\nThis will force the account back to 'Pending Activation' and erase current history for this ID.`;
-    
-    if (confirm(confirmMessage)) {
-      setLoading(true);
-      try {
-        await storageService.updateUser(user.id, { 
-          isPasswordSet: false, 
-          password: '',
-          isActive: true,
-          status: 'active'
-        });
-        
-        const allEntries = await storageService.getEntries();
-        const userEntries = allEntries.filter(e => e.userId === user.id);
-        for (const entry of userEntries) {
-          await storageService.deleteEntry(entry.id);
-        }
-        
-        await refreshData(currentUser!.id, true);
-        alert(`Account '${user.username}' reset successfully. Status: PENDING ACTIVATION.`);
-      } catch (err) {
-        console.error("Reset Failure:", err);
-      } finally {
-        setLoading(false);
-      }
-    }
-  };
-
-  const handleDeleteEmployee = async (user: User) => {
-    const confirmMessage = `CRITICAL ACTION: Permanently delete the personnel record for '${user.fullName}' (${user.username})? \n\nThis will erase all profile data and ALL work history. THIS CANNOT BE UNDONE. Are you absolutely sure?`;
-    
-    if (confirm(confirmMessage)) {
-      setLoading(true);
-      try {
-        await storageService.deleteUser(user.id);
-        const allEntries = await storageService.getEntries();
-        const userEntries = allEntries.filter(e => e.userId === user.id);
-        for (const entry of userEntries) {
-          await storageService.deleteEntry(entry.id);
-        }
-        await refreshData(currentUser!.id, true);
-        alert(`Record for '${user.username}' has been successfully expunged.`);
-      } catch (err) {
-        console.error("Delete Failure:", err);
-      } finally {
-        setLoading(false);
-      }
-    }
-  };
-
   const switchTab = (tab: Tab) => {
     setActiveTab(tab);
     setViewingUser(null);
@@ -267,6 +235,17 @@ const App: React.FC = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const toggleUserStatus = async (user: User) => {
+    const newStatus: UserStatus = user.status === 'active' ? 'left' : 'active';
+    const msg = newStatus === 'left' ? 
+      `Archive ${user.fullName}? This will block their login access.` : 
+      `Restore ${user.fullName}? They will regain access.`;
+    if (confirm(msg)) {
+      await storageService.updateUser(user.id, { status: newStatus });
+      await refreshData(currentUser!.id, true);
+    }
+  };
+
   if (isVerifying && tempUser) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
@@ -274,23 +253,20 @@ const App: React.FC = () => {
           <div className="mb-12 mt-[-3rem] flex justify-center items-center">
             <Logo size="lg" subtitle="SECURITY CHECK" />
           </div>
-          <h2 className="text-xs font-bold text-[#E8B49A] mb-8 uppercase tracking-widest logo-font">Set Private Passcode</h2>
+          <h2 className="text-xs font-bold text-[#E8B49A] mb-8 uppercase tracking-widest logo-font">Setup Passcode</h2>
           <form onSubmit={(e) => {
             e.preventDefault();
             storageService.setUserPassword(tempUser.id, newPassword);
             loginUser({...tempUser, password: newPassword, isPasswordSet: true});
+            setActiveTab('dashboard');
           }} className="space-y-6">
             <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="w-full px-4 py-4 bg-black border-4 border-slate-800 rounded-xl text-white text-center text-3xl tracking-[0.4em] outline-none focus:border-[#10b981] logo-font" placeholder="••••" required minLength={4} maxLength={8} />
-            <p className="text-[10px] text-slate-500 logo-font uppercase tracking-widest">Choose a code for future logins</p>
-            <button type="submit" className="w-full bg-[#10b981] text-black py-4.5 rounded-xl font-black uppercase tracking-[0.2em] text-sm hover:scale-[1.02] active:scale-95 transition-all logo-font">Confirm & Start Ledger</button>
+            <button type="submit" className="w-full bg-[#10b981] text-black py-4.5 rounded-xl font-black uppercase tracking-[0.2em] text-sm hover:scale-[1.02] active:scale-95 transition-all logo-font">Activate Account</button>
           </form>
         </div>
       </div>
     );
   }
-
-  const matchingUser = allUsers.find(u => u.username.toLowerCase() === loginUsername.trim().toLowerCase());
-  const needsActivation = matchingUser && !matchingUser.isPasswordSet;
 
   if (!currentUser) {
     return (
@@ -306,30 +282,17 @@ const App: React.FC = () => {
             </div>
             {!tempUser ? (
               <div className="space-y-1">
-                <label className="text-[9px] font-black uppercase text-slate-500 tracking-widest ml-2 logo-font">Security Passcode</label>
-                <input 
-                  type="password" 
-                  value={loginPassword} 
-                  onChange={(e) => setLoginPassword(e.target.value)} 
-                  disabled={!!needsActivation}
-                  className={`w-full px-6 py-5 bg-slate-950 border-[3px] border-slate-800 rounded-xl text-white outline-none font-black text-xl transition-all logo-font ${needsActivation ? 'opacity-20 grayscale cursor-not-allowed' : 'focus:border-[#89CFF0]'}`} 
-                  placeholder={needsActivation ? "••••••••" : "Passcode"} 
-                />
-                <p className="text-[7px] text-slate-600 uppercase tracking-widest ml-2 mt-2">
-                  {needsActivation ? 'Account Purified. Initialize activation below.' : 'Authorized Personnel Only.'}
-                </p>
+                <label className="text-[9px] font-black uppercase text-slate-500 tracking-widest ml-2 logo-font">Access Key</label>
+                <input type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} className="w-full px-6 py-5 bg-slate-950 border-[3px] border-slate-800 rounded-xl text-white outline-none font-black text-xl focus:border-[#89CFF0] transition-all logo-font" placeholder="••••••••" required />
               </div>
             ) : (
               <div className="animate-in slide-in-from-top-2 duration-300">
-                <p className="text-[10px] font-black text-[#89CFF0] mb-4 logo-font uppercase tracking-widest">Verify Registered DOB</p>
-                <input type="date" value={loginDob} onChange={e => setLoginDob(e.target.value)} className="w-full bg-black border-4 border-slate-800 p-4 rounded-xl text-white outline-none font-black focus:border-[#10b981]" required />
+                <p className="text-xs text-slate-400 mb-4 logo-font">Security Challenge Active</p>
+                <input type="date" value={loginDob} onChange={e => setLoginDob(e.target.value)} className="w-full bg-black border-2 border-slate-800 p-4 rounded-xl text-white outline-none font-black focus:border-[#10b981]" />
               </div>
             )}
-            {error && <p className="text-red-500 text-[9px] font-black text-center uppercase tracking-widest bg-red-500/10 py-4 rounded-lg logo-font px-4 leading-relaxed">{error}</p>}
-            <button type="submit" className={`w-full py-5 rounded-xl font-black uppercase tracking-[0.1em] text-lg border-4 border-transparent transition-all logo-font ${needsActivation ? 'bg-[#89CFF0] text-black shadow-[0_0_20px_rgba(137,207,240,0.3)]' : 'bg-white text-black hover:bg-[#10b981]'}`}>
-              {tempUser ? 'Complete Verification' : (needsActivation ? 'Initialize Activation' : 'Login Session')}
-            </button>
-            {tempUser && <button type="button" onClick={() => setTempUser(null)} className="w-full text-[9px] font-black text-slate-600 uppercase tracking-widest mt-2 hover:text-white">Cancel</button>}
+            {error && <p className="text-red-500 text-[9px] font-black text-center uppercase tracking-widest bg-red-500/10 py-4 rounded-lg logo-font">{error}</p>}
+            <button type="submit" className="w-full bg-white text-black py-5 rounded-xl font-black uppercase tracking-[0.1em] text-lg border-4 border-transparent hover:bg-[#10b981] hover:scale-[1.01] active:scale-95 transition-all logo-font">Initialize Session</button>
           </form>
         </div>
       </div>
@@ -337,21 +300,26 @@ const App: React.FC = () => {
   }
 
   const activeEmployees = allUsers.filter(u => u.role === 'EMPLOYEE' && u.status === 'active');
-
-  const now = new Date();
-  const displayDay = now.getDate().toString().padStart(2, '0');
-  const displayMonth = now.toLocaleString('default', { month: 'long' }).toUpperCase();
-  const displayYear = now.getFullYear();
+  const leftEmployees = allUsers.filter(u => u.role === 'EMPLOYEE' && u.status === 'left');
 
   return (
     <div className="flex flex-col min-h-screen bg-black text-white selection:bg-[#89CFF0] selection:text-black">
+      {/* CINEMATIC OVERLAY: Played on top so tab state is never lost */}
       {showSplash && currentUser && (
         <SplashSequence onComplete={() => setShowSplash(false)} />
       )}
 
-      <Navigation user={currentUser} onLogout={handleLogout} activeTab={activeTab} onTabChange={switchTab} onAddEmployee={() => { setIsAddingEmployee(!isAddingEmployee); setEditingUser(null); }} isAddingEmployee={isAddingEmployee} dbStatus={dbStatus} />
+      <Navigation 
+        user={currentUser} 
+        onLogout={handleLogout} 
+        activeTab={activeTab} 
+        onTabChange={switchTab} 
+        onAddEmployee={() => { setIsAddingEmployee(!isAddingEmployee); setEditingUser(null); }}
+        isAddingEmployee={isAddingEmployee}
+        dbStatus={dbStatus}
+      />
       
-      <div className="flex-grow pt-[170px] md:pt-[210px]">
+      <div className="flex-grow pt-[110px] md:pt-[130px]">
         {activeTab === 'build' ? (
           <div className="h-[calc(100vh-130px)] overflow-hidden">
             <BuildPage />
@@ -360,43 +328,21 @@ const App: React.FC = () => {
           <main className="max-w-[1600px] mx-auto p-4 lg:px-12 lg:py-6 flex flex-col gap-6 min-h-screen pb-20">
             {activeTab === 'dashboard' ? (
               <div className="space-y-12 animate-in fade-in duration-500">
-                
-                {/* Mobile Specific Header Order: Clock -> Date -> Ledger Heading */}
-                <div className="flex flex-col gap-4 md:gap-8">
-                  
-                  {/* MOBILE CLOCK & DATE (Hidden on Desktop) */}
-                  <div className="md:hidden flex flex-col items-center justify-center gap-6 mb-4">
-                    <div className="w-full flex items-center justify-center p-4 bg-slate-900/40 rounded-[2.5rem] border-2 border-slate-800 shadow-xl overflow-hidden min-h-[280px]">
-                      <AnalogClock />
-                    </div>
-                    
-                    {/* High Precision Date Section */}
-                    <div className="flex flex-col items-center gap-2 border-b-2 border-slate-800/60 pb-4 w-full">
-                       <p className="text-[10px] font-black logo-font text-slate-500 uppercase tracking-[0.8em]">Operational Cycle</p>
-                       <h3 className="text-3xl font-black logo-font text-white flex items-center gap-3">
-                          <span className="text-[#10b981]">{displayDay}</span>
-                          <span className="w-1.5 h-1.5 bg-slate-700 rounded-full"></span>
-                          <span>{displayMonth}</span>
-                          <span className="w-1.5 h-1.5 bg-slate-700 rounded-full"></span>
-                          <span className="text-[#89CFF0]">{displayYear}</span>
-                       </h3>
-                    </div>
-                  </div>
-
+                <div className="flex flex-col gap-8">
                   <div className="flex flex-col md:flex-row items-center justify-between">
-                    <h2 className="text-4xl md:text-[6.5rem] font-black logo-font text-white uppercase tracking-[-0.05em] leading-[0.9] mb-0 text-center md:text-left">
-                      {viewingUser ? viewingUser.fullName.toUpperCase() : (currentUser.role === 'MASTER' ? "Queens Ledger" : 'LEDGER')}
-                    </h2>
-                    {viewingUser && <button onClick={() => setViewingUser(null)} className="mt-4 md:mt-0 px-7 py-3 bg-[#E8B49A] text-black rounded-lg text-xs font-black uppercase tracking-widest shadow-md hover:scale-105 transition-transform logo-font">End Inspection</button>}
+                    <div className="flex items-center gap-4">
+                      <h2 className="text-5xl md:text-[6.5rem] font-black logo-font text-white uppercase tracking-[-0.05em] leading-[0.9] mb-0">
+                        {viewingUser ? viewingUser.fullName.toUpperCase() : (currentUser.role === 'MASTER' ? "Queens Ledger" : 'LEDGER')}
+                      </h2>
+                    </div>
+                    {viewingUser && <button onClick={() => setViewingUser(null)} className="px-7 py-3 bg-[#E8B49A] text-black rounded-lg text-xs font-black uppercase tracking-widest shadow-md hover:scale-105 transition-transform logo-font">End Inspection</button>}
                   </div>
 
-                  {/* DESKTOP GRID (Clock moves here on Large screens) */}
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch w-full">
                     <div className="lg:col-span-8 flex flex-col">
                       <SummaryDashboard entries={entries} />
                     </div>
-                    {/* DESKTOP CLOCK CONTAINER (Hidden on Mobile) */}
-                    <div className="hidden lg:flex lg:col-span-4 w-full items-center justify-center p-4 bg-slate-900/40 rounded-[3rem] border-2 border-slate-800 shadow-2xl relative overflow-hidden min-h-[520px]">
+                    <div className="lg:col-span-4 w-full flex items-center justify-center p-4 bg-slate-900/40 rounded-[3rem] border-2 border-slate-800 shadow-2xl relative overflow-hidden min-h-[520px]">
                       {currentUser.role === 'EMPLOYEE' && !viewingUser && (
                         <div className="absolute inset-0 flex items-center justify-center opacity-[0.04] pointer-events-none">
                            <i className="fa-solid fa-lock text-[32rem] text-white"></i>
@@ -418,7 +364,9 @@ const App: React.FC = () => {
                 <div className="space-y-6 mt-6">
                      <div className="flex items-center gap-6">
                         <div className="h-px flex-grow bg-slate-800"></div>
-                        <h3 className="text-[10px] font-black logo-font text-white uppercase tracking-[0.6em] opacity-40">History Archives</h3>
+                        <h3 className="text-[10px] font-black logo-font text-white uppercase tracking-[0.6em] opacity-40">
+                          Historical Archives
+                        </h3>
                         <div className="h-px flex-grow bg-slate-800"></div>
                      </div>
                      <HistoryList summaries={summaries} onDelete={async (id) => { if(confirm("PERMANENT ERASE?")) { await storageService.deleteEntry(id); refreshData(currentUser.id, currentUser.role === 'MASTER'); } }} onEdit={handleEditEntry} onVerifyChange={handleVerifyChange} currentUser={currentUser} viewingUser={viewingUser} />
@@ -427,88 +375,93 @@ const App: React.FC = () => {
             ) : activeTab === 'employees' ? (
               <div className="space-y-12 animate-in fade-in duration-500">
                  <div className="flex flex-col md:flex-row justify-between items-center border-b-2 border-slate-800 pb-10 gap-6">
-                    <h2 className="text-4xl lg:text-7xl font-black text-white uppercase logo-font tracking-tight">Personnel Registry</h2>
-                    <div className="flex gap-4">
-                      <button onClick={async () => { setLoading(true); await refreshData(currentUser.id, true); setLoading(false); }} className="px-6 py-5 bg-slate-800 text-white font-black uppercase text-xs tracking-widest rounded-2xl shadow-xl transition-all active:scale-95 logo-font">
-                        <i className={`fa-solid fa-sync ${loading ? 'animate-spin' : ''}`}></i>
-                      </button>
-                      <button onClick={() => { setIsAddingEmployee(!isAddingEmployee); setEditingUser(null); }} className="px-10 py-5 bg-white text-black font-black uppercase text-xs tracking-widest rounded-2xl shadow-xl transition-all active:scale-95 logo-font">
-                        {isAddingEmployee || editingUser ? 'Cancel Operation' : 'Add Employee'}
-                      </button>
-                    </div>
+                    <h2 className="text-4xl lg:text-7xl font-black text-white uppercase logo-font tracking-tight">Employee Registry</h2>
+                    <button onClick={() => { setIsAddingEmployee(!isAddingEmployee); setEditingUser(null); }} className="px-10 py-5 bg-white text-black font-black uppercase text-xs tracking-widest rounded-2xl shadow-xl transition-all active:scale-95 logo-font">
+                      {isAddingEmployee || editingUser ? 'Cancel Operation' : 'Add Employee'}
+                    </button>
                  </div>
                  
                  {(isAddingEmployee || editingUser) && (
                     <div className="bg-slate-900 p-10 rounded-[3rem] border-4 border-slate-800 shadow-2xl max-w-4xl mx-auto animate-in zoom-in duration-300 mb-12">
-                       <h3 className="text-3xl font-black logo-font text-white mb-10 uppercase text-center">{editingUser ? 'Modify Record' : 'New Registration'}</h3>
+                       <h3 className="text-3xl font-black logo-font text-white mb-10 uppercase text-center">{editingUser ? 'Modify Employee' : 'New Employee Registration'}</h3>
                        <form onSubmit={handleEmployeeSubmit} className="space-y-8">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                             <div className="space-y-1">
-                              <label className="text-[9px] font-black uppercase text-slate-500 tracking-widest ml-2 logo-font">Full Name</label>
-                              <input type="text" value={editingUser ? editingUser.fullName : newEmp.fullName} onChange={e => editingUser ? setEditingUser({...editingUser, fullName: e.target.value}) : setNewEmp({...newEmp, fullName: e.target.value})} className="w-full bg-black border-2 border-slate-800 p-5 rounded-2xl text-white outline-none font-black text-lg focus:border-[#89CFF0]" placeholder="Name" required />
+                              <label className="text-[9px] font-black uppercase text-slate-500 tracking-widest ml-2 logo-font">Full Legal Name</label>
+                              <input type="text" value={editingUser ? editingUser.fullName : newEmp.fullName} onChange={e => editingUser ? setEditingUser({...editingUser, fullName: e.target.value}) : setNewEmp({...newEmp, fullName: e.target.value})} className="w-full bg-black border-2 border-slate-800 p-5 rounded-2xl text-white outline-none font-black text-lg focus:border-[#89CFF0]" placeholder="Full Name" required />
                             </div>
                             <div className="space-y-1">
-                              <label className="text-[9px] font-black uppercase text-slate-500 tracking-widest ml-2 logo-font">Login ID</label>
+                              <label className="text-[9px] font-black uppercase text-slate-500 tracking-widest ml-2 logo-font">Authorized ID</label>
                               <input type="text" value={editingUser ? editingUser.username : newEmp.username} onChange={e => editingUser ? setEditingUser({...editingUser, username: e.target.value}) : setNewEmp({...newEmp, username: e.target.value})} className="w-full bg-black border-2 border-slate-800 p-5 rounded-2xl text-white outline-none font-black text-lg focus:border-[#89CFF0]" placeholder="Username" required />
                             </div>
                             <div className="space-y-1">
-                              <label className="text-[9px] font-black uppercase text-slate-500 tracking-widest ml-2 logo-font">Security Key (DOB)</label>
-                              <input type="date" value={editingUser ? editingUser.dob : newEmp.dob} onChange={e => editingUser ? setEditingUser({...editingUser, dob: e.target.value}) : setNewEmp({...newEmp, dob: e.target.value})} className="w-full bg-black border-2 border-slate-800 p-5 rounded-2xl text-white outline-none font-black text-lg focus:border-[#89CFF0]" required />
-                            </div>
-                            <div className="space-y-1">
-                              <label className="text-[9px] font-black uppercase text-slate-500 tracking-widest ml-2 logo-font">Status</label>
+                              <label className="text-[9px] font-black uppercase text-slate-500 tracking-widest ml-2 logo-font">Service Status</label>
                               <div className="flex gap-2">
                                 <button type="button" onClick={() => editingUser ? setEditingUser({...editingUser, status: 'active'}) : setNewEmp({...newEmp, status: 'active'})} className={`flex-1 py-4 rounded-xl text-[10px] font-black uppercase tracking-widest border-2 transition-all ${(editingUser?.status || newEmp.status) === 'active' ? 'bg-[#10b981] border-[#10b981] text-black' : 'border-slate-800 text-slate-500'}`}>Active</button>
                                 <button type="button" onClick={() => editingUser ? setEditingUser({...editingUser, status: 'left'}) : setNewEmp({...newEmp, status: 'left'})} className={`flex-1 py-4 rounded-xl text-[10px] font-black uppercase tracking-widest border-2 transition-all ${(editingUser?.status || newEmp.status) === 'left' ? 'bg-amber-600 border-amber-600 text-white' : 'border-slate-800 text-slate-500'}`}>Left</button>
                               </div>
                             </div>
+                            <div className="space-y-1 md:col-span-2">
+                              <label className="text-[9px] font-black uppercase text-slate-500 tracking-widest ml-2 logo-font">Residential Address</label>
+                              <input type="text" value={editingUser ? editingUser.address : newEmp.address} onChange={e => editingUser ? setEditingUser({...editingUser, address: e.target.value}) : setNewEmp({...newEmp, address: e.target.value})} className="w-full bg-black border-2 border-slate-800 p-5 rounded-2xl text-white outline-none font-black text-lg focus:border-[#89CFF0]" placeholder="Address" />
+                            </div>
                           </div>
                           <button type="submit" className="w-full py-7 bg-[#10b981] text-black font-black uppercase text-lg tracking-[0.3em] rounded-2xl shadow-xl hover:scale-[1.01] transition-all">
-                            {editingUser ? 'Commit Updates' : 'Register Asset'}
+                            {editingUser ? 'Update Employee Record' : 'Commit Entry'}
                           </button>
                        </form>
                     </div>
                  )}
 
-                 <div className="space-y-8">
-                    {activeEmployees.map(u => (
-                      <div key={u.id} className="bg-slate-900/50 p-5 md:p-8 rounded-[2.5rem] border-2 border-slate-800 flex flex-col md:flex-row items-center justify-between gap-6 group transition-all shadow-lg hover:bg-slate-900">
-                        <div className="flex items-center gap-6 w-full md:w-auto">
-                            <div className="w-16 h-16 rounded-[1.5rem] flex items-center justify-center font-black text-2xl border-2 border-slate-800 shrink-0 bg-black text-[#89CFF0]">
-                              {u.fullName.charAt(0).toUpperCase()}
+                 <div className="space-y-12">
+                   <div className="space-y-4">
+                      <h3 className="text-[11px] font-black text-[#10b981] uppercase tracking-[0.5em] ml-4">Active Personnel</h3>
+                      <div className="grid grid-cols-1 gap-4">
+                        {activeEmployees.map(u => (
+                          <div key={u.id} className="bg-slate-900/50 p-5 rounded-[2rem] border-2 border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4 group transition-all shadow-lg hover:bg-slate-900">
+                            <div className="flex items-center gap-6 w-full sm:w-auto">
+                                <div className="w-14 h-14 rounded-[1.2rem] flex items-center justify-center font-black text-xl border-2 border-slate-800 shrink-0 bg-black text-[#89CFF0]">
+                                  {u.fullName.charAt(0).toUpperCase()}
+                                </div>
+                                <div className="text-left">
+                                  <h4 className="text-lg font-black text-white uppercase logo-font tracking-tight">{u.fullName}</h4>
+                                  <p className="text-[8px] font-black uppercase tracking-[0.3em] mt-1 text-[#10b981]">ACTIVE SERVICE</p>
+                                </div>
                             </div>
-                            <div className="text-left">
-                              <h4 className="text-xl font-black text-white uppercase logo-font tracking-tight">{u.fullName} <span className="text-[10px] text-slate-600 ml-2">({u.username})</span></h4>
-                              <p className="text-[9px] font-black uppercase tracking-[0.3em] mt-1 text-slate-500">
-                                KEY: {u.dob} | {u.isPasswordSet ? (
-                                  <span className="text-[#10b981] font-black bg-[#10b981]/10 px-3 py-1 rounded-full inline-flex items-center gap-1.5"><i className="fa-solid fa-circle-check"></i> ACTIVATED</span>
-                                ) : (
-                                  <span className="text-amber-500 font-black bg-amber-500/10 px-3 py-1 rounded-full inline-flex items-center gap-1.5 animate-pulse"><i className="fa-solid fa-triangle-exclamation"></i> PENDING ACTIVATION</span>
-                                )}
-                              </p>
+                            <div className="flex flex-wrap justify-center sm:justify-end gap-3 w-full sm:w-auto">
+                                <button onClick={() => startInspecting(u)} className="px-6 py-4 bg-[#89CFF0] text-black rounded-xl text-[10px] font-black uppercase tracking-widest shadow-md">Ledger</button>
+                                <button onClick={() => { setEditingUser(u); setIsAddingEmployee(false); }} className="px-6 py-4 bg-white text-black rounded-xl text-[10px] font-black uppercase tracking-widest shadow-md">Edit Profile</button>
+                                <button onClick={() => toggleUserStatus(u)} className="px-6 py-4 border-2 border-amber-500/20 text-amber-500 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all">Archive</button>
                             </div>
-                        </div>
-                        
-                        <div className="grid grid-cols-2 gap-3 w-full md:flex md:flex-wrap md:w-auto md:justify-end">
-                            <button onClick={() => startInspecting(u)} className="px-5 py-4 bg-[#89CFF0] text-black rounded-xl text-[9px] font-black uppercase tracking-widest shadow-md hover:scale-105 transition-all">View Ledger</button>
-                            <button onClick={() => { setEditingUser(u); setIsAddingEmployee(false); }} className="px-5 py-4 bg-white text-black rounded-xl text-[9px] font-black uppercase tracking-widest shadow-md hover:scale-105 transition-all">Edit Profile</button>
-                            <button 
-                              onClick={() => resetEmployeeActivation(u)} 
-                              className={`px-5 py-4 rounded-xl text-[9px] font-black uppercase tracking-widest border transition-all ${u.isPasswordSet ? 'bg-yellow-400/10 text-yellow-400 border-yellow-400/20 hover:bg-yellow-400 hover:text-black' : 'bg-slate-800 text-slate-600 border-slate-700 opacity-50 cursor-not-allowed'}`}
-                              disabled={!u.isPasswordSet || loading}
-                            >
-                              Reset & Wipe
-                            </button>
-                            <button 
-                              onClick={() => handleDeleteEmployee(u)} 
-                              className={`px-5 py-4 rounded-xl text-[9px] font-black uppercase tracking-widest border transition-all bg-red-600/10 text-red-500 border-red-500/20 hover:bg-red-600 hover:text-white`}
-                              disabled={loading}
-                            >
-                              <i className="fa-solid fa-trash-can mr-2"></i> Delete Record
-                            </button>
-                        </div>
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                   </div>
+
+                   {leftEmployees.length > 0 && (
+                     <div className="space-y-4">
+                        <h3 className="text-[11px] font-black text-slate-500 uppercase tracking-[0.5em] ml-4">Archived Personnel</h3>
+                        <div className="grid grid-cols-1 gap-4">
+                          {leftEmployees.map(u => (
+                            <div key={u.id} className="bg-slate-900/20 p-5 rounded-[2rem] border-2 border-slate-800/40 flex flex-col sm:flex-row items-center justify-between gap-4 opacity-50 grayscale transition-all">
+                              <div className="flex items-center gap-6 w-full sm:w-auto">
+                                  <div className="w-14 h-14 rounded-[1.2rem] flex items-center justify-center font-black text-xl border-2 border-slate-800/40 shrink-0 bg-black text-slate-600">
+                                    {u.fullName.charAt(0).toUpperCase()}
+                                  </div>
+                                  <div className="text-left">
+                                    <h4 className="text-lg font-black text-slate-400 uppercase logo-font tracking-tight">{u.fullName}</h4>
+                                    <p className="text-[8px] font-black uppercase tracking-[0.3em] mt-1 text-amber-500">SERVICE EXIT</p>
+                                  </div>
+                              </div>
+                              <div className="flex flex-wrap justify-center sm:justify-end gap-3 w-full sm:w-auto">
+                                  <button onClick={() => startInspecting(u)} className="px-6 py-4 bg-slate-800 text-slate-400 rounded-xl text-[10px] font-black uppercase tracking-widest">History</button>
+                                  <button onClick={() => toggleUserStatus(u)} className="px-6 py-4 border-2 border-[#10b981]/20 text-[#10b981] rounded-xl text-[10px] font-black uppercase tracking-widest transition-all">Restore</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                     </div>
+                   )}
                  </div>
               </div>
             ) : (

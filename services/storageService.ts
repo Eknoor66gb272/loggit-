@@ -1,4 +1,3 @@
-
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { User, WorkEntry, MonthSummary, VerificationRecord, DesignProject } from '../types';
 import { INITIAL_USERS } from '../constants';
@@ -35,10 +34,8 @@ export const storageService = {
     this.initLocal();
     if (supabase) {
       try {
-        // Precise Table Verification
         const { data: users, error } = await supabase.from('users').select('id').limit(1);
         
-        // If the table doesn't exist, Supabase returns a 404/42P01 error
         if (error) {
           console.warn("[DB] Tables missing or RLS blocking. Using Local Engine.");
           connectionState = 'local';
@@ -75,7 +72,11 @@ export const storageService = {
   async getUsers(): Promise<User[]> {
     if (supabase && connectionState === 'connected') {
       const { data, error } = await supabase.from('users').select('*').order('fullName', { ascending: true });
-      if (!error && data) return data;
+      if (!error && data) {
+         // Sync local with cloud to ensure no ghost entries on next login
+         localStorage.setItem(LOCAL_KEYS.USERS, JSON.stringify(data));
+         return data;
+      }
     }
     return JSON.parse(localStorage.getItem(LOCAL_KEYS.USERS) || '[]');
   },
@@ -153,14 +154,18 @@ export const storageService = {
   },
 
   async updateUser(id: string, updates: Partial<User>) {
-    if (supabase && connectionState === 'connected') {
-      await supabase.from('users').update(updates).eq('id', id);
-    }
+    // Force immediate local update
     const users = JSON.parse(localStorage.getItem(LOCAL_KEYS.USERS) || '[]');
     const idx = users.findIndex((u: any) => u.id === id);
     if (idx !== -1) {
       users[idx] = { ...users[idx], ...updates };
       localStorage.setItem(LOCAL_KEYS.USERS, JSON.stringify(users));
+      console.log(`[STORAGE] Local User Sync: ${id}`, updates);
+    }
+
+    // Cloud update
+    if (supabase && connectionState === 'connected') {
+      await supabase.from('users').update(updates).eq('id', id);
     }
   },
 
